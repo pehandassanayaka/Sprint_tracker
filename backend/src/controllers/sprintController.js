@@ -2,7 +2,11 @@ const db = require('../db/database');
 
 const getAllSprints = async (req, res) => {
     try {
-        const sprints = await db.all('SELECT * FROM Sprints ORDER BY start_date DESC');
+        // Only return sprints belonging to the authenticated user
+        const sprints = await db.all(
+            'SELECT * FROM Sprints WHERE user_id = ? ORDER BY start_date DESC',
+            [req.user.id]
+        );
         res.json(sprints);
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch sprints', details: err.message });
@@ -12,7 +16,11 @@ const getAllSprints = async (req, res) => {
 const getSprintById = async (req, res) => {
     const { id } = req.params;
     try {
-        const sprint = await db.get('SELECT * FROM Sprints WHERE id = ?', [id]);
+        // Scope lookup to the authenticated user so IDs can't be guessed
+        const sprint = await db.get(
+            'SELECT * FROM Sprints WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
         if (!sprint) {
             return res.status(404).json({ error: 'Sprint not found' });
         }
@@ -29,8 +37,11 @@ const createSprint = async (req, res) => {
     }
     const sprintName = name || null;
     try {
-        const result = await db.run('INSERT INTO Sprints (start_date, end_date, name) VALUES (?, ?, ?)', [start_date, end_date, sprintName]);
-        res.status(201).json({ id: result.lastID, start_date, end_date, name: sprintName });
+        const result = await db.run(
+            'INSERT INTO Sprints (start_date, end_date, name, user_id) VALUES (?, ?, ?, ?)',
+            [start_date, end_date, sprintName, req.user.id]
+        );
+        res.status(201).json({ id: result.lastID, start_date, end_date, name: sprintName, user_id: req.user.id });
     } catch (err) {
         res.status(500).json({ error: 'Failed to create sprint', details: err.message });
     }
@@ -44,7 +55,11 @@ const updateSprint = async (req, res) => {
     }
     const sprintName = name || null;
     try {
-        const result = await db.run('UPDATE Sprints SET start_date = ?, end_date = ?, name = ? WHERE id = ?', [start_date, end_date, sprintName, id]);
+        // WHERE user_id = ? prevents one user from editing another's sprint
+        const result = await db.run(
+            'UPDATE Sprints SET start_date = ?, end_date = ?, name = ? WHERE id = ? AND user_id = ?',
+            [start_date, end_date, sprintName, id, req.user.id]
+        );
         if (result.changes === 0) {
             return res.status(404).json({ error: 'Sprint not found' });
         }
@@ -58,32 +73,36 @@ const deleteSprint = async (req, res) => {
     const { id } = req.params;
 
     try {
-        // 1. Start a transaction to protect data integrity
+        // First verify the sprint belongs to this user
+        const sprint = await db.get(
+            'SELECT id FROM Sprints WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
+        if (!sprint) {
+            return res.status(404).json({ error: 'Sprint not found' });
+        }
+
         await db.run('BEGIN TRANSACTION');
 
-        // 2. Delete all tasks associated with this sprint first (The Cascade)
-        await db.run('DELETE FROM Tasks WHERE sprint_id = ?', [id]);
+        // Cascade: delete all tasks for this sprint
+        await db.run('DELETE FROM Tasks WHERE sprint_id = ? AND user_id = ?', [id, req.user.id]);
 
-        // 3. Delete the sprint itself
-        const result = await db.run('DELETE FROM Sprints WHERE id = ?', [id]);
+        // Delete the sprint itself
+        const result = await db.run(
+            'DELETE FROM Sprints WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
 
-        // If no sprint was deleted (e.g., the ID didn't exist), cancel everything
         if (result.changes === 0) {
             await db.run('ROLLBACK');
             return res.status(404).json({ error: 'Sprint not found' });
         }
 
-        // 4. If both succeeded, commit the changes to the database permanently
         await db.run('COMMIT');
         res.json({ message: 'Sprint and all associated tasks deleted successfully' });
 
     } catch (err) {
-        // If ANY error happens during the deletions, cancel the transaction safely
-        try {
-            await db.run('ROLLBACK');
-        } catch (rollbackErr) {
-            console.error("Rollback failed:", rollbackErr);
-        }
+        try { await db.run('ROLLBACK'); } catch (_) { /* ignore */ }
         res.status(500).json({ error: 'Failed to delete sprint', details: err.message });
     }
 };

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import {
     fetchSprints,
     fetchTasksBySprintId,
@@ -12,6 +13,10 @@ import {
     moveTaskToTomorrow,
     fetchBlockersByDate,
 } from './services/api';
+import { useAuth } from './context/AuthContext';
+import ProtectedRoute from './components/ProtectedRoute';
+import LoginPage    from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
 import './index.css';
 import RetroReportPage from './components/RetroReportPage';
 
@@ -782,9 +787,27 @@ function DeleteSprintModal({ sprint, onClose, onDeleted }) {
     );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Main App (router shell) ──────────────────────────────────────────────────
 
 export default function App() {
+    return (
+        <Routes>
+            <Route path="/login"    element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            {/* All routes inside ProtectedRoute require a valid JWT */}
+            <Route element={<ProtectedRoute />}>
+                <Route path="/" element={<Dashboard />} />
+            </Route>
+            {/* Catch-all → home (ProtectedRoute will redirect to login if needed) */}
+            <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+    );
+}
+
+// ─── Dashboard (the main sprint view) ────────────────────────────────────────
+
+function Dashboard() {
+    const { user, logout } = useAuth();
     const [sprints,          setSprints]          = useState([]);
     const [activeSprint,     setActiveSprint]     = useState(null);
     const [tasks,            setTasks]            = useState([]);
@@ -952,7 +975,31 @@ export default function App() {
                         <div className="logo-icon">🚀</div>
                         <h1>SprintTrack</h1>
                     </div>
-                    <div className="header-meta">Sprint Dashboard</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div className="header-meta">Sprint Dashboard</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>@{user?.username}</span>
+                            <button
+                                id="logout-btn"
+                                onClick={logout}
+                                style={{
+                                    background: 'transparent',
+                                    border: '1px solid var(--border)',
+                                    color: 'var(--text-secondary)',
+                                    borderRadius: 'var(--radius-sm)',
+                                    padding: '4px 10px',
+                                    fontSize: '0.75rem',
+                                    cursor: 'pointer',
+                                    transition: 'all var(--transition)',
+                                }}
+                                title="Sign out"
+                                onMouseEnter={e => { e.target.style.borderColor = '#ef4444'; e.target.style.color = '#f87171'; }}
+                                onMouseLeave={e => { e.target.style.borderColor = 'var(--border)'; e.target.style.color = 'var(--text-secondary)'; }}
+                            >
+                                Sign out
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </header>
 

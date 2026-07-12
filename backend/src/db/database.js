@@ -1,10 +1,17 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs   = require('fs');
 
-// Production: DB lives in /app/data (mounted volume) so it survives rebuilds.
-// Development: falls back to a local ./data/ directory next to the backend folder.
-const dataDir = process.env.DB_DIR || path.resolve(__dirname, '../../../data');
-const dbPath  = path.join(dataDir, 'database.sqlite');
+// Production: DB_DIR env var points to the Docker-mounted volume path (/app/data).
+// Local dev (no env var): prefer ./data/database.sqlite next to the project root,
+// but fall back to the legacy project-root database.sqlite so existing installs
+// continue to work without moving anything.
+const dataDir     = process.env.DB_DIR || path.resolve(__dirname, '../../../data');
+const primaryPath = path.join(dataDir, 'database.sqlite');
+const legacyPath  = path.resolve(__dirname, '../../../database.sqlite');
+const dbPath = fs.existsSync(primaryPath)
+    ? primaryPath
+    : (fs.existsSync(legacyPath) ? legacyPath : primaryPath);
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {

@@ -1,82 +1,81 @@
 const API_BASE_URL = '/api';
 
-const handleResponse = async (response) => {
-    if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
-        throw new Error(errorBody.error || `HTTP error! status: ${response.status}`);
+// ── Token helpers ─────────────────────────────────────────────────────────────
+export const getToken  = ()          => localStorage.getItem('jwt_token');
+export const setToken  = (token)     => localStorage.setItem('jwt_token', token);
+export const clearToken = ()         => localStorage.removeItem('jwt_token');
+
+// ── Core fetch wrapper ────────────────────────────────────────────────────────
+/**
+ * Wraps fetch to automatically:
+ *  - Attach Authorization: Bearer <token> when a token is stored
+ *  - Parse the JSON error body for readable messages
+ *  - Dispatch a global 'auth:logout' event on any 401 so AuthContext can log out
+ */
+const apiFetch = async (path, options = {}) => {
+    const token = getToken();
+    const headers = {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+
+    const response = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
+
+    if (response.status === 401) {
+        // Notify AuthContext that the session has expired / is invalid
+        window.dispatchEvent(new Event('auth:logout'));
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || 'Session expired. Please log in again.');
     }
+
+    if (!response.ok) {
+        const body = await response.json().catch(() => ({ error: 'An unknown error occurred.' }));
+        throw new Error(body.error || `HTTP error! status: ${response.status}`);
+    }
+
+    // 204 No Content — no body to parse
+    if (response.status === 204) return null;
     return response.json();
 };
 
-// --- Sprint API ---
-export const fetchSprints = () =>
-    fetch(`${API_BASE_URL}/sprints`).then(handleResponse);
+// ── Auth API (no token required) ──────────────────────────────────────────────
+export const apiLogin    = (username, password) =>
+    apiFetch('/auth/login',    { method: 'POST', body: JSON.stringify({ username, password }) });
 
-export const fetchSprintById = (id) =>
-    fetch(`${API_BASE_URL}/sprints/${id}`).then(handleResponse);
+export const apiRegister = (username, password) =>
+    apiFetch('/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) });
 
-export const createSprint = (sprint) =>
-    fetch(`${API_BASE_URL}/sprints`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sprint),
-    }).then(handleResponse);
+export const apiMe = () => apiFetch('/auth/me');
 
-export const updateSprint = (id, sprint) =>
-    fetch(`${API_BASE_URL}/sprints/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sprint),
-    }).then(handleResponse);
+// ── Sprint API ────────────────────────────────────────────────────────────────
+export const fetchSprints      = ()          => apiFetch('/sprints');
+export const fetchSprintById   = (id)        => apiFetch(`/sprints/${id}`);
+export const createSprint      = (sprint)    => apiFetch('/sprints',     { method: 'POST',   body: JSON.stringify(sprint) });
+export const updateSprint      = (id, data)  => apiFetch(`/sprints/${id}`, { method: 'PUT',  body: JSON.stringify(data)   });
+export const deleteSprint      = (id)        => apiFetch(`/sprints/${id}`, { method: 'DELETE' });
 
-export const deleteSprint = (id) =>
-    fetch(`${API_BASE_URL}/sprints/${id}`, {
-        method: 'DELETE',
-    }).then(handleResponse);
-
-// --- Task API ---
+// ── Task API ──────────────────────────────────────────────────────────────────
 export const fetchTasksBySprintId = (sprintId) =>
-    fetch(`${API_BASE_URL}/tasks?sprint_id=${sprintId}`).then(handleResponse);
+    apiFetch(`/tasks?sprint_id=${sprintId}`);
 
 export const fetchTasks = fetchTasksBySprintId;
 
 export const fetchStandupTasks = (yesterday, today) =>
-    fetch(`${API_BASE_URL}/tasks/standup?yesterday=${yesterday}&today=${today}`).then(handleResponse);
+    apiFetch(`/tasks/standup?yesterday=${yesterday}&today=${today}`);
 
-export const createTask = (task) =>
-    fetch(`${API_BASE_URL}/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(task),
-    }).then(handleResponse);
-
-export const updateTask = (id, task) =>
-    fetch(`${API_BASE_URL}/tasks/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(task),
-    }).then(handleResponse);
-
-export const deleteTask = (id) =>
-    fetch(`${API_BASE_URL}/tasks/${id}`, {
-        method: 'DELETE',
-    }).then(handleResponse);
+export const createTask    = (task)         => apiFetch('/tasks',         { method: 'POST',   body: JSON.stringify(task) });
+export const updateTask    = (id, task)     => apiFetch(`/tasks/${id}`,   { method: 'PUT',    body: JSON.stringify(task) });
+export const deleteTask    = (id)           => apiFetch(`/tasks/${id}`,   { method: 'DELETE' });
 
 export const moveTaskToTomorrow = (taskId) => {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    return fetch(`${API_BASE_URL}/tasks/${taskId}/move-tomorrow?timezone=${encodeURIComponent(timezone)}`, {
-        method: 'PUT',
-    }).then(handleResponse);
+    return apiFetch(`/tasks/${taskId}/move-tomorrow?timezone=${encodeURIComponent(timezone)}`, { method: 'PUT' });
 };
 
-/**
- * Fetch all tasks where type = 'blocker'.
- * @param {string} [date]     - ISO date string YYYY-MM-DD to scope to a single day.
- * @param {number} [sprintId] - Sprint ID to scope to a specific sprint.
- */
 export const fetchBlockersByDate = (date, sprintId) => {
     const params = new URLSearchParams();
     if (date)     params.set('date', date);
     if (sprintId) params.set('sprint_id', sprintId);
-    return fetch(`${API_BASE_URL}/tasks/blockers?${params.toString()}`).then(handleResponse);
+    return apiFetch(`/tasks/blockers?${params.toString()}`);
 };

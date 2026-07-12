@@ -1,16 +1,15 @@
 const db = require('../db/database');
 
 // Allowed values for the `type` column
-const VALID_TYPES = new Set(['task', 'blocker']);
+const VALID_TYPES    = new Set(['task', 'blocker']);
 const VALID_STATUSES = new Set(['todo', 'done']);
 
 const getAllTasks = async (req, res) => {
     const { sprint_id } = req.query;
     try {
-        // Exclude blockers — they are served exclusively by GET /api/tasks/blockers
-        // to prevent the UI from receiving the same row from two different API calls.
-        let query = "SELECT * FROM Tasks WHERE type != 'blocker'";
-        let params = [];
+        // Exclude blockers — served exclusively by GET /api/tasks/blockers
+        let query  = "SELECT * FROM Tasks WHERE type != 'blocker' AND user_id = ?";
+        let params = [req.user.id];
         if (sprint_id) {
             query += ' AND sprint_id = ?';
             params.push(sprint_id);
@@ -29,8 +28,14 @@ const getStandupTasks = async (req, res) => {
         return res.status(400).json({ error: 'yesterday and today query parameters are required (YYYY-MM-DD)' });
     }
     try {
-        const yesterdayTasks = await db.all('SELECT * FROM Tasks WHERE date = ? ORDER BY id', [yesterday]);
-        const todayTasks = await db.all('SELECT * FROM Tasks WHERE date = ? ORDER BY id', [today]);
+        const yesterdayTasks = await db.all(
+            'SELECT * FROM Tasks WHERE date = ? AND user_id = ? ORDER BY id',
+            [yesterday, req.user.id]
+        );
+        const todayTasks = await db.all(
+            'SELECT * FROM Tasks WHERE date = ? AND user_id = ? ORDER BY id',
+            [today, req.user.id]
+        );
         res.json({ yesterday: yesterdayTasks, today: todayTasks });
     } catch (err) {
         res.status(500).json({ error: 'Failed to fetch standup tasks', details: err.message });
@@ -40,7 +45,10 @@ const getStandupTasks = async (req, res) => {
 const getTaskById = async (req, res) => {
     const { id } = req.params;
     try {
-        const task = await db.get('SELECT * FROM Tasks WHERE id = ?', [id]);
+        const task = await db.get(
+            'SELECT * FROM Tasks WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
         if (!task) {
             return res.status(404).json({ error: 'Task not found' });
         }
@@ -64,9 +72,18 @@ const createTask = async (req, res) => {
         return res.status(400).json({ error: `Invalid type '${taskType}'. Must be one of: ${[...VALID_TYPES].join(', ')}` });
     }
     try {
+        // Verify the target sprint belongs to this user before inserting
+        const sprint = await db.get(
+            'SELECT id FROM Sprints WHERE id = ? AND user_id = ?',
+            [sprint_id, req.user.id]
+        );
+        if (!sprint) {
+            return res.status(403).json({ error: 'Sprint not found or not accessible' });
+        }
+
         const result = await db.run(
-            'INSERT INTO Tasks (sprint_id, date, description, tags, time_spent, status, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [sprint_id, date, description, tags || null, time_spent || 0, taskStatus, taskType]
+            'INSERT INTO Tasks (sprint_id, date, description, tags, time_spent, status, type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [sprint_id, date, description, tags || null, time_spent || 0, taskStatus, taskType, req.user.id]
         );
         res.status(201).json({
             id: result.lastID,
@@ -77,6 +94,7 @@ const createTask = async (req, res) => {
             time_spent: time_spent || 0,
             status: taskStatus,
             type: taskType,
+            user_id: req.user.id,
         });
     } catch (err) {
         res.status(500).json({ error: 'Failed to create task', details: err.message });
@@ -99,9 +117,10 @@ const updateTask = async (req, res) => {
         return res.status(400).json({ error: `Invalid type '${taskType}'. Must be one of: ${[...VALID_TYPES].join(', ')}` });
     }
     try {
+        // AND user_id = ? prevents one user from modifying another's task
         const result = await db.run(
-            'UPDATE Tasks SET sprint_id = ?, date = ?, description = ?, tags = ?, time_spent = ?, status = ?, type = ? WHERE id = ?',
-            [sprint_id, date, description, tags || null, time_spent || 0, taskStatus, taskType, id]
+            'UPDATE Tasks SET sprint_id = ?, date = ?, description = ?, tags = ?, time_spent = ?, status = ?, type = ? WHERE id = ? AND user_id = ?',
+            [sprint_id, date, description, tags || null, time_spent || 0, taskStatus, taskType, id, req.user.id]
         );
         if (result.changes === 0) {
             return res.status(404).json({ error: 'Task not found' });
@@ -124,7 +143,10 @@ const updateTask = async (req, res) => {
 const deleteTask = async (req, res) => {
     const { id } = req.params;
     try {
-        const result = await db.run('DELETE FROM Tasks WHERE id = ?', [id]);
+        const result = await db.run(
+            'DELETE FROM Tasks WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
         if (result.changes === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
@@ -136,21 +158,14 @@ const deleteTask = async (req, res) => {
 
 /**
  * PUT /api/tasks/:id/move-tomorrow
- *
- * Moves an uncompleted task to tomorrow's date relative to the client's
- * local timezone. Pass the IANA timezone name as a query parameter:
- *   ?timezone=Asia/Colombo
- * If omitted, UTC is used as the fallback.
  */
 const moveTomorrow = async (req, res) => {
     const { id } = req.params;
     const { timezone } = req.query;
 
-    // Resolve the client timezone, falling back to UTC if invalid/missing
     let resolvedTimezone = 'UTC';
     if (timezone) {
         try {
-            // Validate the timezone string by attempting to format a date with it
             Intl.DateTimeFormat(undefined, { timeZone: timezone });
             resolvedTimezone = timezone;
         } catch {
@@ -159,37 +174,29 @@ const moveTomorrow = async (req, res) => {
     }
 
     try {
-        // 1. Fetch the task
-        const task = await db.get('SELECT * FROM Tasks WHERE id = ?', [id]);
+        const task = await db.get(
+            'SELECT * FROM Tasks WHERE id = ? AND user_id = ?',
+            [id, req.user.id]
+        );
         if (!task) {
             return res.status(404).json({ error: 'Task not found' });
         }
-
-        // 2. Only uncompleted tasks may be moved
         if (task.status === 'done') {
             return res.status(409).json({ error: 'Cannot move a completed task to tomorrow.' });
         }
 
-        // 3. Calculate tomorrow's date in the client's local timezone
-        //    Using Intl.DateTimeFormat to extract year/month/day avoids DST
-        //    issues that arise from simple arithmetic on UTC timestamps.
         const now = new Date();
         const formatter = new Intl.DateTimeFormat('en-CA', {
             timeZone: resolvedTimezone,
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
+            year: 'numeric', month: '2-digit', day: '2-digit',
         });
-        // en-CA locale formats dates as YYYY-MM-DD — no extra parsing needed
-        const todayLocal = formatter.format(now); // e.g. "2026-07-11"
+        const todayLocal   = formatter.format(now);
         const tomorrowDate = new Date(`${todayLocal}T00:00:00`);
         tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-        const tomorrowStr = formatter.format(tomorrowDate); // e.g. "2026-07-12"
+        const tomorrowStr  = formatter.format(tomorrowDate);
 
-        // 4. Update the task's date in the database
-        await db.run('UPDATE Tasks SET date = ? WHERE id = ?', [tomorrowStr, id]);
+        await db.run('UPDATE Tasks SET date = ? WHERE id = ? AND user_id = ?', [tomorrowStr, id, req.user.id]);
 
-        // 5. Return the full updated task object
         const updatedTask = await db.get('SELECT * FROM Tasks WHERE id = ?', [id]);
         res.json(updatedTask);
     } catch (err) {
@@ -199,16 +206,12 @@ const moveTomorrow = async (req, res) => {
 
 /**
  * GET /api/tasks/blockers?date=YYYY-MM-DD[&sprint_id=N]
- *
- * Returns all tasks where type = 'blocker' for the given date.
- * Optionally scoped to a sprint via sprint_id.
- * If no date is provided, returns all blockers across the sprint (or all sprints).
  */
 const getBlockersByDate = async (req, res) => {
     const { date, sprint_id } = req.query;
     try {
-        let query = "SELECT * FROM Tasks WHERE type = 'blocker'";
-        const params = [];
+        let query  = "SELECT * FROM Tasks WHERE type = 'blocker' AND user_id = ?";
+        const params = [req.user.id];
         if (date) {
             query += ' AND date = ?';
             params.push(date);
