@@ -8,8 +8,11 @@ import {
     createSprint,
     updateSprint,
     fetchStandupTasks,
+    moveTaskToTomorrow,
+    fetchBlockersByDate,
 } from './services/api';
 import './index.css';
+import RetroReportPage from './components/RetroReportPage';
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
@@ -54,15 +57,19 @@ const buildSprintDays = (startDate, endDate) => {
     const today = toISODate(new Date());
     let cur = new Date(start);
     while (cur <= end) {
-        const iso = toISODate(cur);
-        days.push({
-            iso,
-            day: cur.getDate(),
-            weekdayIndex: cur.getDay(),
-            weekdayName: WEEKDAYS[cur.getDay()],
-            isToday: iso === today,
-            isWeekend: cur.getDay() === 0 || cur.getDay() === 6,
-        });
+        const dayOfWeek = cur.getDay();
+        // Skip Saturday (6) and Sunday (0) — only render business days
+        if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+            const iso = toISODate(cur);
+            days.push({
+                iso,
+                day: cur.getDate(),
+                weekdayIndex: dayOfWeek,
+                weekdayName: WEEKDAYS[dayOfWeek],
+                isToday: iso === today,
+                isWeekend: false,
+            });
+        }
         cur.setDate(cur.getDate() + 1);
     }
     return days;
@@ -87,12 +94,14 @@ function Toast({ message, type, onClose }) {
 
 // ─── Add Task Modal ───────────────────────────────────────────────────────────
 
-function TaskRow({ task, onToggle, onDelete }) {
+function TaskRow({ task, onToggle, onDelete, onMoveTomorrow, movingId }) {
     const tags = task.tags ? task.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
     const isDone = task.status === 'done';
+    const isBlocker = task.type === 'blocker';
+    const isMoving = movingId === task.id;
 
     return (
-        <div className={`task-item ${isDone ? 'task-done' : ''}`}>
+        <div className={`task-item ${isBlocker ? 'task-blocker' : ''}`}>
             <button
                 className={`task-checkbox ${isDone ? 'checked' : ''}`}
                 onClick={() => onToggle(task)}
@@ -102,7 +111,7 @@ function TaskRow({ task, onToggle, onDelete }) {
                 {isDone ? '✓' : ''}
             </button>
             <div className="task-item-body">
-                <div className={`task-item-desc ${isDone ? 'task-desc-done' : ''}`}>{task.description}</div>
+                <div className="task-item-desc">{task.description}</div>
                 <div className="task-item-meta">
                     {tags.map((tag, i) => (
                         <span key={i} className={`task-tag ${getTagClass(tag)}`}>#{tag}</span>
@@ -112,6 +121,17 @@ function TaskRow({ task, onToggle, onDelete }) {
                     )}
                 </div>
             </div>
+            {!isDone && onMoveTomorrow && (
+                <button
+                    className="task-move-btn"
+                    onClick={() => onMoveTomorrow(task.id)}
+                    disabled={isMoving || movingId != null}
+                    aria-label="Move task to tomorrow"
+                    title={isMoving ? 'Moving…' : 'Move to Tomorrow'}
+                >
+                    {isMoving ? '…' : '→'}
+                </button>
+            )}
             <button
                 className="task-delete-btn"
                 onClick={() => onDelete(task.id)}
@@ -122,21 +142,37 @@ function TaskRow({ task, onToggle, onDelete }) {
     );
 }
 
-function DayModal({ day, sprintId, tasks, onClose, onTaskAdded, onTaskDeleted, onTaskUpdated }) {
+function DayModal({ day, sprintId, tasks, onClose, onTaskAdded, onTaskDeleted, onTaskUpdated, onTaskMoved, onBlockersFetched }) {
     // Quick-add state
     const [quickDesc, setQuickDesc]   = useState('');
     const [activeTags, setActiveTags] = useState([]);
     const [customTag, setCustomTag]   = useState('');
     const [timeSpent, setTimeSpent]   = useState('');
-    const [showForm, setShowForm]     = useState(false);
-    const [saving, setSaving]         = useState(false);
-    const [error, setError]           = useState('');
+    const [showForm, setShowForm]         = useState(false);
+    const [saving, setSaving]             = useState(false);
+    const [error, setError]               = useState('');
+    const [movingId, setMovingId]         = useState(null);
+    // Blocker quick-add state
+    const [blockerDesc, setBlockerDesc]   = useState('');
+    const [savingBlocker, setSavingBlocker] = useState(false);
+    const [loadingBlockers, setLoadingBlockers] = useState(true);
 
     const toggleTag = (id) => {
         setActiveTags(prev =>
             prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
         );
     };
+
+    // Fetch blockers for this day on mount — completely replace any existing
+    // blocker rows for this date to avoid duplicates on modal re-open.
+    useEffect(() => {
+        setLoadingBlockers(true);
+        fetchBlockersByDate(day.iso, sprintId)
+            .then(fetched => onBlockersFetched(day.iso, fetched))
+            .catch(() => { /* blockers load silently */ })
+            .finally(() => setLoadingBlockers(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [day.iso, sprintId]);
 
     const handleQuickAdd = async (e) => {
         if ((e.type === 'keydown' && e.key !== 'Enter') || !quickDesc.trim()) return;
@@ -206,21 +242,105 @@ function DayModal({ day, sprintId, tasks, onClose, onTaskAdded, onTaskDeleted, o
         }
     };
 
-    const dayTasks   = tasks.filter(t => t.date === day.iso);
-    const todoTasks  = dayTasks.filter(t => t.status !== 'done');
-    const doneTasks  = dayTasks.filter(t => t.status === 'done');
-    const totalHours = doneTasks.reduce((s, t) => s + (t.time_spent || 0), 0);
+    // Returns a YYYY-MM-DD string, advancing past any Saturday or Sunday
+    // to the following Monday. Uses local year/month/day to avoid UTC
+    // timezone off-by-one errors.
+    const nearestWorkday = (date) => {
+        const d = new Date(date); // work on a copy
+        const dow = d.getDay();   // 0 = Sun, 6 = Sat
+        if (dow === 6) d.setDate(d.getDate() + 2); // Sat → Mon
+        if (dow === 0) d.setDate(d.getDate() + 1); // Sun → Mon
+        // Build YYYY-MM-DD from local calendar fields — avoids UTC shift
+        const y  = d.getFullYear();
+        const m  = String(d.getMonth() + 1).padStart(2, '0');
+        const dy = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dy}`;
+    };
+
+    const handleMoveTomorrow = async (taskId) => {
+        setMovingId(taskId);
+        setError('');
+        try {
+            // Resolve today in local calendar time (avoids UTC shift)
+            const now = new Date();
+            const y   = now.getFullYear();
+            const m   = String(now.getMonth() + 1).padStart(2, '0');
+            const d   = String(now.getDate()).padStart(2, '0');
+            const todayStr = `${y}-${m}-${d}`;
+
+            // Tomorrow: add one day to a local-midnight Date
+            const tomorrowDate = new Date(now);
+            tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+
+            // Conditional rule:
+            //   Task is from TODAY       → target is TOMORROW
+            //   Task is from any other day → target is TODAY
+            const rawTarget = day.iso === todayStr ? tomorrowDate : now;
+
+            // Skip weekends — roll forward to nearest Monday if needed
+            const targetDate = nearestWorkday(rawTarget);
+
+            const task = tasks.find(t => t.id === taskId);
+            if (!task) throw new Error('Task not found in local state.');
+
+            await updateTask(taskId, { ...task, date: targetDate });
+            // Update the task's date in local state — keeps target day in sync
+            onTaskMoved(taskId, targetDate);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setMovingId(null);
+        }
+    };
+
+
+
+    const handleQuickAddBlocker = async (e) => {
+        if ((e.type === 'keydown' && e.key !== 'Enter') || !blockerDesc.trim()) return;
+        setSavingBlocker(true);
+        setError('');
+        try {
+            const newBlocker = await createTask({
+                sprint_id:   sprintId,
+                date:        day.iso,
+                description: blockerDesc.trim(),
+                tags:        null,
+                time_spent:  0,
+                status:      'todo',
+                type:        'blocker',
+            });
+            onTaskAdded(newBlocker);
+            setBlockerDesc('');
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setSavingBlocker(false);
+        }
+    };
+
+    const dayTasks     = tasks.filter(t => t.date === day.iso);
+    // Separate regular tasks (type = 'task' or undefined for legacy rows) from blockers
+    const regularTasks = dayTasks.filter(t => !t.type || t.type === 'task');
+    const todoTasks    = regularTasks.filter(t => t.status !== 'done');
+    const doneTasks    = regularTasks.filter(t => t.status === 'done');
+    const blockerTasks = dayTasks.filter(t => t.type === 'blocker');
+    const totalHours   = doneTasks.reduce((s, t) => s + (t.time_spent || 0), 0);
 
     return (
         <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-            <div className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div className="modal modal-wide modal-three-col" role="dialog" aria-modal="true" aria-labelledby="modal-title">
                 <div className="modal-header">
                     <div className="modal-title-group">
                         <h2 id="modal-title">
                             {day.weekdayName} · {formatDate(day.iso)}
                         </h2>
                         <p>
-                            {doneTasks.length}/{dayTasks.length} done · {totalHours.toFixed(1)}h logged
+                            {doneTasks.length}/{regularTasks.length} done · {totalHours.toFixed(1)}h logged
+                            {blockerTasks.length > 0 && (
+                                <span className="header-blocker-badge">
+                                    ⚠ {blockerTasks.length} blocker{blockerTasks.length !== 1 ? 's' : ''}
+                                </span>
+                            )}
                         </p>
                     </div>
                     <button className="modal-close" onClick={onClose} aria-label="Close modal">×</button>
@@ -302,7 +422,9 @@ function DayModal({ day, sprintId, tasks, onClose, onTaskAdded, onTaskDeleted, o
                                 todoTasks.map(task => (
                                     <TaskRow key={task.id} task={task}
                                         onToggle={handleToggleStatus}
-                                        onDelete={handleDelete} />
+                                        onDelete={handleDelete}
+                                        onMoveTomorrow={handleMoveTomorrow}
+                                        movingId={movingId} />
                                 ))
                             )}
                         </div>
@@ -320,6 +442,42 @@ function DayModal({ day, sprintId, tasks, onClose, onTaskAdded, onTaskDeleted, o
                                 <div className="column-empty">Complete tasks to see them here</div>
                             ) : (
                                 doneTasks.map(task => (
+                                    <TaskRow key={task.id} task={task}
+                                        onToggle={handleToggleStatus}
+                                        onDelete={handleDelete} />
+                                ))
+                            )}
+                        </div>
+                    </div>
+
+                    {/* ── Blockers Column ── */}
+                    <div className="modal-column">
+                        <div className="column-header column-blocker">
+                            <span className="column-icon">⚠</span>
+                            <span>Blockers</span>
+                            <span className="column-count blocker">{blockerTasks.length}</span>
+                        </div>
+
+                        {/* Blocker quick-add */}
+                        <div className="quick-add-wrap">
+                            <input
+                                id="blocker-add-input"
+                                className="form-input quick-add-input quick-add-blocker"
+                                placeholder="+ Add a blocker… (press Enter)"
+                                value={blockerDesc}
+                                onChange={e => setBlockerDesc(e.target.value)}
+                                onKeyDown={handleQuickAddBlocker}
+                                disabled={savingBlocker}
+                            />
+                        </div>
+
+                        <div className="task-list">
+                            {loadingBlockers ? (
+                                <div className="column-empty">Loading blockers…</div>
+                            ) : blockerTasks.length === 0 ? (
+                                <div className="column-empty">No blockers — great!</div>
+                            ) : (
+                                blockerTasks.map(task => (
                                     <TaskRow key={task.id} task={task}
                                         onToggle={handleToggleStatus}
                                         onDelete={handleDelete} />
@@ -542,6 +700,7 @@ export default function App() {
     const [error,          setError]          = useState('');
     const [toast,          setToast]          = useState(null);
     const [showNewSprint,  setShowNewSprint]  = useState(false);
+    const [showRetroReport, setShowRetroReport] = useState(false);
 
     const showToast = useCallback((message, type = 'success') => {
         setToast({ message, type });
@@ -587,17 +746,29 @@ export default function App() {
         setTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
     }, []);
 
+    const handleTaskMoved = useCallback((taskId, newDate) => {
+        // Update the task's date in local state so the target day cell
+        // shows it immediately without a page refresh.
+        setTasks(prev => prev.map(t =>
+            t.id === taskId ? { ...t, date: newDate } : t
+        ));
+        showToast('Task moved! 📅', 'success');
+    }, [showToast]);
+
+    // Replace (not append) blocker rows for a given date so re-opening the
+    // modal never produces duplicates.
+    const handleBlockersFetched = useCallback((date, fetched) => {
+        setTasks(prev => [
+            ...prev.filter(t => !(t.type === 'blocker' && t.date === date)),
+            ...fetched,
+        ]);
+    }, []);
+
     const handleSprintCreated = useCallback((sprint) => {
         setSprints(prev => [sprint, ...prev]);
         setActiveSprint(sprint);
         setShowNewSprint(false);
         showToast('Sprint created!');
-    }, [showToast]);
-
-    const handleSprintUpdated = useCallback((updated) => {
-        setSprints(prev => prev.map(s => s.id === updated.id ? updated : s));
-        setActiveSprint(prev => prev?.id === updated.id ? updated : prev);
-        showToast('Sprint renamed!');
     }, [showToast]);
 
     const handleGenerateStandup = async () => {
@@ -656,6 +827,15 @@ export default function App() {
         );
     }
 
+    if (showRetroReport && activeSprint) {
+        return (
+            <RetroReportPage
+                sprint={activeSprint}
+                onClose={() => setShowRetroReport(false)}
+            />
+        );
+    }
+
     return (
         <div className="app">
             {/* Header */}
@@ -682,7 +862,7 @@ export default function App() {
                         <span className="sprint-badge">Sprint</span>
                         <div>
                             <div className="sprint-title">
-                                {activeSprint ? `Sprint #${activeSprint.id}` : 'No sprints yet'}
+                                {activeSprint ? (activeSprint.name || `Sprint #${activeSprint.id}`) : 'No sprints yet'}
                             </div>
                             {activeSprint && (
                                 <div className="sprint-dates">
@@ -690,6 +870,16 @@ export default function App() {
                                 </div>
                             )}
                         </div>
+                        {activeSprint && (
+                            <button
+                                id="retro-report-btn"
+                                className="btn btn-ghost"
+                                onClick={() => setShowRetroReport(true)}
+                                title="Open sprint retrospective report"
+                            >
+                                📊 Retro Report
+                            </button>
+                        )}
                     </div>
 
                     <div className="controls-right">
@@ -752,25 +942,16 @@ export default function App() {
 
                 {/* Calendar */}
                 {activeSprint && sprintDays.length > 0 ? (
-                    <>
-                        <div className="calendar-heading-row">
-                            <SprintNameEditor
-                                sprint={activeSprint}
-                                onSaved={handleSprintUpdated}
+                    <div className="calendar-grid" role="grid" aria-label="Sprint calendar">
+                        {sprintDays.map((day) => (
+                            <DayCell
+                                key={day.iso}
+                                day={day}
+                                tasks={tasks}
+                                onClick={() => setSelectedDay(day)}
                             />
-                            <span className="calendar-sub">{sprintDays.length}-Day Sprint</span>
-                        </div>
-                        <div className="calendar-grid" role="grid" aria-label="Sprint calendar">
-                            {sprintDays.map((day) => (
-                                <DayCell
-                                    key={day.iso}
-                                    day={day}
-                                    tasks={tasks}
-                                    onClick={() => setSelectedDay(day)}
-                                />
-                            ))}
-                        </div>
-                    </>
+                        ))}
+                    </div>
                 ) : (
                     !loading && (
                         <div className="empty-state">
@@ -794,6 +975,8 @@ export default function App() {
                     onTaskAdded={handleTaskAdded}
                     onTaskDeleted={handleTaskDeleted}
                     onTaskUpdated={handleTaskUpdated}
+                    onTaskMoved={handleTaskMoved}
+                    onBlockersFetched={handleBlockersFetched}
                 />
             )}
 

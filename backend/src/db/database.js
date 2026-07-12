@@ -1,8 +1,10 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-// Keep DB in the project root directory
-const dbPath = path.resolve(__dirname, '../../../database.sqlite');
+// Production: DB lives in /app/data (mounted volume) so it survives rebuilds.
+// Development: falls back to a local ./data/ directory next to the backend folder.
+const dataDir = process.env.DB_DIR || path.resolve(__dirname, '../../../data');
+const dbPath  = path.join(dataDir, 'database.sqlite');
 
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
@@ -30,8 +32,22 @@ const db = new sqlite3.Database(dbPath, (err) => {
             tags TEXT,
             time_spent REAL,
             status TEXT DEFAULT 'todo',
+            type TEXT NOT NULL DEFAULT 'task',
             FOREIGN KEY (sprint_id) REFERENCES Sprints(id) ON DELETE CASCADE
-        )`);
+        )`, (tableErr) => {
+            if (tableErr) {
+                console.error('Error creating Tasks table:', tableErr.message);
+                return;
+            }
+            // Runtime migration guard: adds the `type` column to databases that
+            // existed before this column was introduced. SQLite throws an error
+            // if the column already exists, so we catch and ignore it safely.
+            db.run(`ALTER TABLE Tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'task'`, (alterErr) => {
+                if (alterErr && !alterErr.message.includes('duplicate column name')) {
+                    console.error('Migration error (type column):', alterErr.message);
+                }
+            });
+        });
     }
 });
 

@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
 
 /* ============================================
    DESIGN SYSTEM — TOKENS
@@ -773,6 +774,14 @@ textarea.form-input {
   max-width: 780px;
 }
 
+.modal-three-col {
+  max-width: 1100px;
+}
+
+.modal-three-col .modal-columns {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .modal-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -816,6 +825,12 @@ textarea.form-input {
   border: 1px solid rgba(34, 197, 94, 0.2);
 }
 
+.column-header.column-blocker {
+  background: rgba(251, 146, 60, 0.1);
+  color: #fb923c;
+  border: 1px solid rgba(251, 146, 60, 0.25);
+}
+
 .column-count {
   margin-left: auto;
   background: rgba(108, 99, 255, 0.2);
@@ -829,6 +844,11 @@ textarea.form-input {
 .column-count.done {
   background: rgba(34, 197, 94, 0.15);
   color: #4ade80;
+}
+
+.column-count.blocker {
+  background: rgba(251, 146, 60, 0.15);
+  color: #fb923c;
 }
 
 .column-empty {
@@ -913,11 +933,7 @@ textarea.form-input {
 
 .task-item:hover { border-color: var(--border-accent); }
 
-.task-item.task-done {
-  opacity: 0.65;
-  border-color: rgba(34, 197, 94, 0.2);
-  background: rgba(34, 197, 94, 0.04);
-}
+
 
 /* Checkbox button */
 .task-checkbox {
@@ -955,11 +971,7 @@ textarea.form-input {
   border-color: #16a34a;
 }
 
-/* Strikethrough for done tasks */
-.task-desc-done {
-  text-decoration: line-through;
-  color: var(--text-muted) !important;
-}
+
 
 .task-item-body { flex: 1; min-width: 0; }
 
@@ -981,7 +993,39 @@ textarea.form-input {
 
 @media (max-width: 640px) {
   .modal-columns { grid-template-columns: 1fr; }
+  .modal-three-col .modal-columns { grid-template-columns: 1fr; }
   .modal-wide { max-width: 100%; }
+}
+
+/* Blocker task item — orange left border to visually flag it */
+.task-item.task-blocker {
+  border-left: 3px solid rgba(251, 146, 60, 0.6);
+  background: rgba(251, 146, 60, 0.04);
+}
+
+.task-item.task-blocker:hover {
+  border-color: #fb923c;
+  background: rgba(251, 146, 60, 0.08);
+}
+
+/* Blocker quick-add input — orange accent focus ring */
+.quick-add-blocker:focus {
+  border-color: rgba(251, 146, 60, 0.5);
+  box-shadow: 0 0 0 3px rgba(251, 146, 60, 0.12);
+  outline: none;
+}
+
+/* Blocker count badge in modal header subtitle */
+.header-blocker-badge {
+  margin-left: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fb923c;
+  background: rgba(251, 146, 60, 0.12);
+  border: 1px solid rgba(251, 146, 60, 0.25);
+  border-radius: 999px;
+  padding: 1px 8px;
+  vertical-align: middle;
 }
 
 
@@ -1015,6 +1059,29 @@ textarea.form-input {
 .task-delete-btn:hover {
   color: var(--tag-meeting-fg);
   background: var(--tag-meeting-bg);
+}
+
+.task-move-btn {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition), transform var(--transition);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.task-move-btn:hover:not(:disabled) {
+  color: var(--tag-ticket-fg);
+  background: var(--tag-ticket-bg);
+  transform: translateX(2px);
+}
+
+.task-move-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Modal footer */

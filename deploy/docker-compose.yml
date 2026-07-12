@@ -6,8 +6,12 @@ services:
     ports:
       - "127.0.0.1:5000:5000"
     volumes:
+      # Persistent host directory → container path where the DB is written.
+      # The host directory ./data is NEVER deleted by docker-compose down or rebuilds.
       - ./data:/app/data
     restart: always
     environment:
       - NODE_ENV=production
       - PORT=5000
+      # Tell database.js exactly where to write the SQLite file inside the container.
+      - DB_DIR=/app/data
