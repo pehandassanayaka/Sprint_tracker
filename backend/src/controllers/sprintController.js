@@ -56,25 +56,34 @@ const updateSprint = async (req, res) => {
 
 const deleteSprint = async (req, res) => {
     const { id } = req.params;
-    try {
-        // Safety check: refuse deletion if the sprint has associated tasks.
-        // This prevents silent data loss. The client must cascade-delete
-        // tasks first, or the user must choose a different sprint.
-        const taskCount = await db.get(
-            'SELECT COUNT(*) AS count FROM Tasks WHERE sprint_id = ?', [id]
-        );
-        if (taskCount && taskCount.count > 0) {
-            return res.status(409).json({
-                error: `Cannot delete sprint: it has ${taskCount.count} associated task${taskCount.count !== 1 ? 's' : ''}. Delete all tasks first.`
-            });
-        }
 
+    try {
+        // 1. Start a transaction to protect data integrity
+        await db.run('BEGIN TRANSACTION');
+
+        // 2. Delete all tasks associated with this sprint first (The Cascade)
+        await db.run('DELETE FROM Tasks WHERE sprint_id = ?', [id]);
+
+        // 3. Delete the sprint itself
         const result = await db.run('DELETE FROM Sprints WHERE id = ?', [id]);
+
+        // If no sprint was deleted (e.g., the ID didn't exist), cancel everything
         if (result.changes === 0) {
+            await db.run('ROLLBACK');
             return res.status(404).json({ error: 'Sprint not found' });
         }
-        res.json({ message: 'Sprint deleted successfully' });
+
+        // 4. If both succeeded, commit the changes to the database permanently
+        await db.run('COMMIT');
+        res.json({ message: 'Sprint and all associated tasks deleted successfully' });
+
     } catch (err) {
+        // If ANY error happens during the deletions, cancel the transaction safely
+        try {
+            await db.run('ROLLBACK');
+        } catch (rollbackErr) {
+            console.error("Rollback failed:", rollbackErr);
+        }
         res.status(500).json({ error: 'Failed to delete sprint', details: err.message });
     }
 };
