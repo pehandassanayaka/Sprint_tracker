@@ -25,7 +25,7 @@ app.use('/api/tasks', taskRoutes);    // protected: requires JWT
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
 
 // 2. Catch-all route for React Router (must be placed AFTER API routes)
-app.get('*', (req, res) => {
+app.get(/(.*)/, (req, res) => {
     res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
 });
 // -----------------------------------
