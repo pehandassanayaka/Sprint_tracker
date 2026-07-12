@@ -29,6 +29,11 @@ export const updateSprint = (id, sprint) =>
         body: JSON.stringify(sprint),
     }).then(handleResponse);
 
+export const deleteSprint = (id) =>
+    fetch(`${API_BASE_URL}/sprints/${id}`, {
+        method: 'DELETE',
+    }).then(handleResponse);
+
 // --- Task API ---
 export const fetchTasksBySprintId = (sprintId) =>
     fetch(`${API_BASE_URL}/tasks?sprint_id=${sprintId}`).then(handleResponse);

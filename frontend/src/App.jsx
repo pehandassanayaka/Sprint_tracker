@@ -7,6 +7,7 @@ import {
     deleteTask,
     createSprint,
     updateSprint,
+    deleteSprint,
     fetchStandupTasks,
     moveTaskToTomorrow,
     fetchBlockersByDate,
@@ -688,19 +689,113 @@ function NewSprintModal({ onClose, onCreated }) {
     );
 }
 
+// ─── Delete Sprint Confirmation Modal ─────────────────────────────────────────────
+
+function DeleteSprintModal({ sprint, onClose, onDeleted }) {
+    const [confirmText, setConfirmText] = useState('');
+    const [deleting, setDeleting]       = useState(false);
+    const [error, setError]             = useState('');
+    const inputRef                      = useRef(null);
+
+    // Autofocus the confirmation input on mount
+    useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50); }, []);
+
+    const sprintLabel = sprint.name || `Sprint #${sprint.id}`;
+    const isMatch     = confirmText.trim() === sprintLabel;
+
+    const handleDelete = async () => {
+        if (!isMatch) return;
+        setDeleting(true);
+        setError('');
+        try {
+            await deleteSprint(sprint.id);
+            onDeleted(sprint.id);
+        } catch (err) {
+            setError(err.message);
+            setDeleting(false);
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && isMatch) handleDelete();
+        if (e.key === 'Escape') onClose();
+    };
+
+    return (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal modal-danger" role="alertdialog" aria-modal="true" aria-labelledby="delete-modal-title">
+                <div className="modal-header danger-header">
+                    <div className="modal-title-group">
+                        <h2 id="delete-modal-title">⚠ Delete Sprint</h2>
+                        <p>This action is permanent and cannot be undone.</p>
+                    </div>
+                    <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
+                </div>
+
+                {error && <div className="error-banner danger-error">⚠ {error}</div>}
+
+                <div className="danger-body">
+                    <p className="danger-warning">
+                        You are about to permanently delete{' '}
+                        <strong className="danger-name">{sprintLabel}</strong>.
+                    </p>
+                    <p className="danger-hint">
+                        To confirm, type the sprint name exactly as shown above:
+                    </p>
+                    <div className="form-group">
+                        <input
+                            ref={inputRef}
+                            id="delete-confirm-input"
+                            className={`form-input danger-input ${confirmText && !isMatch ? 'input-mismatch' : ''} ${isMatch ? 'input-match' : ''}`}
+                            placeholder={sprintLabel}
+                            value={confirmText}
+                            onChange={e => { setConfirmText(e.target.value); setError(''); }}
+                            onKeyDown={handleKeyDown}
+                            disabled={deleting}
+                            aria-label="Type sprint name to confirm deletion"
+                        />
+                        {confirmText && !isMatch && (
+                            <p className="input-hint mismatch">Name doesn't match.</p>
+                        )}
+                        {isMatch && (
+                            <p className="input-hint match">✓ Name confirmed.</p>
+                        )}
+                    </div>
+                </div>
+
+                <div className="modal-footer">
+                    <button className="btn btn-ghost" onClick={onClose} disabled={deleting}>
+                        Cancel
+                    </button>
+                    <button
+                        id="confirm-delete-sprint-btn"
+                        className={`btn btn-danger ${!isMatch ? 'btn-disabled' : ''}`}
+                        onClick={handleDelete}
+                        disabled={!isMatch || deleting}
+                        title={!isMatch ? 'Type the sprint name to enable this button' : 'Delete sprint permanently'}
+                    >
+                        {deleting ? 'Deleting…' : '🗑 Delete Sprint'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-    const [sprints,        setSprints]        = useState([]);
-    const [activeSprint,   setActiveSprint]   = useState(null);
-    const [tasks,          setTasks]          = useState([]);
-    const [sprintDays,     setSprintDays]     = useState([]);
-    const [selectedDay,    setSelectedDay]    = useState(null);
-    const [loading,        setLoading]        = useState(true);
-    const [error,          setError]          = useState('');
-    const [toast,          setToast]          = useState(null);
-    const [showNewSprint,  setShowNewSprint]  = useState(false);
-    const [showRetroReport, setShowRetroReport] = useState(false);
+    const [sprints,          setSprints]          = useState([]);
+    const [activeSprint,     setActiveSprint]     = useState(null);
+    const [tasks,            setTasks]            = useState([]);
+    const [sprintDays,       setSprintDays]       = useState([]);
+    const [selectedDay,      setSelectedDay]      = useState(null);
+    const [loading,          setLoading]          = useState(true);
+    const [error,            setError]            = useState('');
+    const [toast,            setToast]            = useState(null);
+    const [showNewSprint,    setShowNewSprint]    = useState(false);
+    const [showRetroReport,  setShowRetroReport]  = useState(false);
+    const [showDeleteSprint, setShowDeleteSprint] = useState(false);
 
     const showToast = useCallback((message, type = 'success') => {
         setToast({ message, type });
@@ -769,6 +864,18 @@ export default function App() {
         setActiveSprint(sprint);
         setShowNewSprint(false);
         showToast('Sprint created!');
+    }, [showToast]);
+
+    const handleSprintDeleted = useCallback((sprintId) => {
+        setSprints(prev => {
+            const remaining = prev.filter(s => s.id !== sprintId);
+            // Switch to the next available sprint, or null if none
+            setActiveSprint(remaining.length > 0 ? remaining[0] : null);
+            return remaining;
+        });
+        setTasks([]);
+        setShowDeleteSprint(false);
+        showToast('Sprint deleted.', 'success');
     }, [showToast]);
 
     const handleGenerateStandup = async () => {
@@ -911,6 +1018,16 @@ export default function App() {
                         >
                             + New Sprint
                         </button>
+                        {activeSprint && (
+                            <button
+                                id="delete-sprint-btn"
+                                className="btn btn-danger-ghost"
+                                onClick={() => setShowDeleteSprint(true)}
+                                title="Delete this sprint"
+                            >
+                                🗑 Delete Sprint
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -985,6 +1102,15 @@ export default function App() {
                 <NewSprintModal
                     onClose={() => setShowNewSprint(false)}
                     onCreated={handleSprintCreated}
+                />
+            )}
+
+            {/* Delete Sprint Confirmation Modal */}
+            {showDeleteSprint && activeSprint && (
+                <DeleteSprintModal
+                    sprint={activeSprint}
+                    onClose={() => setShowDeleteSprint(false)}
+                    onDeleted={handleSprintDeleted}
                 />
             )}
 

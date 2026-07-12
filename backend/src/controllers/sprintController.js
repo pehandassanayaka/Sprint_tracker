@@ -57,6 +57,18 @@ const updateSprint = async (req, res) => {
 const deleteSprint = async (req, res) => {
     const { id } = req.params;
     try {
+        // Safety check: refuse deletion if the sprint has associated tasks.
+        // This prevents silent data loss. The client must cascade-delete
+        // tasks first, or the user must choose a different sprint.
+        const taskCount = await db.get(
+            'SELECT COUNT(*) AS count FROM Tasks WHERE sprint_id = ?', [id]
+        );
+        if (taskCount && taskCount.count > 0) {
+            return res.status(409).json({
+                error: `Cannot delete sprint: it has ${taskCount.count} associated task${taskCount.count !== 1 ? 's' : ''}. Delete all tasks first.`
+            });
+        }
+
         const result = await db.run('DELETE FROM Sprints WHERE id = ?', [id]);
         if (result.changes === 0) {
             return res.status(404).json({ error: 'Sprint not found' });
